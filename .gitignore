@@ -1,0 +1,30 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Secrets / local config
+.env
+*.env.local
+
+# Dataset (provenance documented in docs/data_dictionary.md; not redistributed)
+ml/data/raw/*
+!ml/data/raw/.gitkeep
+
+# Model artifacts and experiment stores
+ml/artifacts/
+mlruns/
+mlartifacts/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
