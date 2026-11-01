@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pm-simulator"
+version = "0.1.0"
+description = "Historical replay simulator: replays NASA C-MAPSS FD001 readings through the ingestion API"
+requires-python = ">=3.11"
+# pm-ml (../ml) is installed separately and first:  pip install -e ml -e simulator
+dependencies = ["httpx>=0.27"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["needs_data: requires the NASA FD001 files in ml/data/raw"]
