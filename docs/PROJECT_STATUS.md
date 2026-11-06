@@ -124,7 +124,8 @@ Docs: `docs/api.md`, `docs/simulator.md`, `docs/decisions/0001-simulation-contro
   fallback). Only a configured-but-invalid setup aborts the run.
 - Downgrading migration `0002` and re-upgrading would relabel simulated engines as `origin='api'` (origin is dropped by the downgrade).
 - Alerts: no hysteresis; thresholds are demo values. Concurrent ingestion for one engine is untested. Phase 1 leftovers: no EDA notebook, no README.
-  Docker, frontend, drift, retraining, MLflow: not started.
+  Docker, drift, retraining, MLflow: not started. Frontend: Phase 3 M0+M1 (scaffold, typed read-only API layer, System page) is implemented in `frontend/`
+  but **not yet committed**; fleet, engine, alerts, simulation-control and model pages are not started. See `frontend/README.md`.
 
 ## Exact next step
 1. Review the Phase 4b diff and approve a commit/push.
