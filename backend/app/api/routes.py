@@ -7,12 +7,13 @@ from typing import Literal
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import BACKEND_ROOT
+from app.api.simulation import router as simulation_router
 from app.core.security import require_api_key
 from app.db.session import get_session
 from app.schemas.api import (
@@ -112,14 +113,19 @@ def engine_predictions(engine_id: int, session: Session = Depends(get_session),
 @v1.post("/readings", response_model=IngestResponse, status_code=201, tags=["ingestion"],
          dependencies=[Depends(require_api_key)], responses=ERR)
 def ingest(body: ReadingIn, request: Request, session: Session = Depends(get_session),
-           model: LoadedModel = Depends(get_model)):
+           model: LoadedModel = Depends(get_model),
+           x_simulation_run: int | None = Header(None, alias="X-Simulation-Run", ge=1)):
     """Store one reading, predict RUL, persist the prediction and update alerts (one transaction).
 
     201 = new reading stored. 200 = identical duplicate (idempotent no-op). 409 = conflicting duplicate or cycle gap.
+
+    Optional header `X-Simulation-Run: <run id>` marks the reading as simulated. The server validates it (run is
+    running/stopping and owns this engine) and locks the engine's origin at creation, so simulated and ordinary
+    data are never mixed (409 engine_origin_mismatch). Ordinary callers simply omit the header.
     """
     settings = request.app.state.settings
     try:
-        result = ingestion.ingest_reading(session, model, settings, body)
+        result = ingestion.ingest_reading(session, model, settings, body, simulation_run_id=x_simulation_run)
     except AppError as e:
         ingestion.record_ingestion_error(
             request.app.state.session_factory, code=e.code, message=e.message,
@@ -188,4 +194,5 @@ def acknowledge_alert(alert_id: int, session: Session = Depends(get_session)):
         return queries.alert_out(alert, queries.version_of(session, alert.model_version_id))
 
 
+v1.include_router(simulation_router)
 router.include_router(v1)

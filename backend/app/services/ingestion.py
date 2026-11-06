@@ -23,10 +23,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import Settings
-from app.models import Alert, Engine, IngestionError, Prediction, SensorReading
+from app.models import Alert, Engine, IngestionError, Prediction, SensorReading, SimulationRun
 from app.models.tables import VALUE_COLUMNS
 from app.services import alerts as alert_service
-from app.services.errors import ConflictingDuplicate, CycleGap
+from app.services.errors import (
+    ConflictingDuplicate, CycleGap, EngineNotInRun, EngineOriginMismatch, SimulationRunNotActive,
+)
 from app.services.model_registry import LoadedModel
 from app.services.prediction import load_history, predict_rows
 
@@ -45,14 +47,31 @@ class IngestResult:
     model_version: str
 
 
-def ingest_reading(session: Session, model: LoadedModel, settings: Settings, data) -> IngestResult:
+def _validate_marker(session: Session, run_id: int, engine_id: int) -> None:
+    """A simulated reading must name an active run (running/stopping) whose engine list contains this engine."""
+    run = session.get(SimulationRun, run_id)
+    if run is None or run.status not in ("running", "stopping"):
+        raise SimulationRunNotActive()
+    if engine_id not in [u + run.id_offset for u in run.engine_units]:
+        raise EngineNotInRun(engine_id)
+
+
+def ingest_reading(session: Session, model: LoadedModel, settings: Settings, data,
+                   simulation_run_id: int | None = None) -> IngestResult:
+    """`simulation_run_id` comes from the X-Simulation-Run header, never from the body. Ordinary callers omit it."""
     engine_id, cycle = data.engine_id, data.cycle
     values = {c: float(getattr(data, c)) for c in VALUE_COLUMNS}
     now = datetime.now(timezone.utc)
 
     with session.begin():
-        session.execute(pg_insert(Engine).values(id=engine_id).on_conflict_do_nothing())
+        origin = "api"
+        if simulation_run_id is not None:
+            _validate_marker(session, simulation_run_id, engine_id)
+            origin = "simulation"
+        session.execute(pg_insert(Engine).values(id=engine_id, origin=origin).on_conflict_do_nothing())
         engine = session.execute(select(Engine).where(Engine.id == engine_id).with_for_update()).scalar_one()
+        if engine.origin != origin:  # origin is fixed at creation: simulated and ordinary data are never mixed
+            raise EngineOriginMismatch(engine_id, engine.origin)
 
         existing = session.scalar(
             select(SensorReading).where(SensorReading.engine_id == engine_id, SensorReading.cycle == cycle))
@@ -70,7 +89,8 @@ def ingest_reading(session: Session, model: LoadedModel, settings: Settings, dat
         if cycle != expected:
             raise CycleGap(engine_id, cycle, expected)
 
-        reading = SensorReading(engine_id=engine_id, cycle=cycle, event_time=data.event_time or now, **values)
+        reading = SensorReading(engine_id=engine_id, cycle=cycle, event_time=data.event_time or now,
+                                simulation_run_id=simulation_run_id, **values)
         session.add(reading)
         session.flush()
         engine.last_cycle, engine.last_reading_at = cycle, reading.event_time
@@ -93,7 +113,7 @@ def ingest_reading(session: Session, model: LoadedModel, settings: Settings, dat
         action, alert = alert_service.evaluate_alert(session, prediction)
 
     log.info("reading ingested", extra={"ctx": {
-        "engine_id": engine_id, "cycle": cycle, "risk": prediction.risk_category,
+        "engine_id": engine_id, "cycle": cycle, "risk": prediction.risk_category, "origin": origin,
         "alert_action": action, "model_version": model.version}})
     return IngestResult("created", engine_id, cycle, prediction, "ok", action, alert, model.version)
 

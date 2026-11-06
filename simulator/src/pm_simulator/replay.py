@@ -100,6 +100,12 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def is_transient_status(status: int) -> bool:
+    """HTTP statuses worth retrying later: server errors, 408 and 429. Every other 4xx is a definitive answer
+    (wrong key, no such run, lease lost, refused request...). Shared by the claim and heartbeat paths."""
+    return status >= 500 or status in (408, 429)
+
+
 # ---- source data ------------------------------------------------------------------------------
 @dataclass(frozen=True)
 class EngineSource:
@@ -166,9 +172,17 @@ class ApiClient:
     RETRY_STATUS = (502, 503, 504)
 
     def __init__(self, http: httpx.Client, api_key: str, *, max_retries: int = 3, backoff: float = 0.5,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep, run_id: int | None = None):
         self._http, self._key = http, api_key
         self.max_retries, self.backoff, self._sleep = max_retries, backoff, sleep
+        self.run_id = run_id            # when set, readings are marked simulated via X-Simulation-Run
+        self.retries = 0                # transient failures retried by this client (reported by the worker)
+        self.last_transient: str | None = None
+
+    def with_run(self, run_id: int) -> "ApiClient":
+        """Same connection and key, but every reading is marked as belonging to simulation run `run_id`."""
+        return ApiClient(self._http, self._key, max_retries=self.max_retries, backoff=self.backoff,
+                         sleep=self._sleep, run_id=run_id)
 
     def __repr__(self) -> str:  # never include the key
         return f"ApiClient(base={safe_url(str(self._http.base_url))})"
@@ -183,7 +197,9 @@ class ApiClient:
                 last = f"HTTP {r.status_code}"
             except httpx.TransportError as e:
                 last = type(e).__name__
+            self.last_transient = last
             if attempt < self.max_retries:
+                self.retries += 1
                 self._sleep(self.backoff * 2 ** attempt)
         raise ServerUnavailable(f"backend unavailable after {self.max_retries + 1} attempts ({last})")
 
@@ -203,7 +219,33 @@ class ApiClient:
         return int(r.json()["last_cycle"])
 
     def post_reading(self, body: dict) -> httpx.Response:
-        return self._request("POST", "/api/v1/readings", json=body, headers={"X-API-Key": self._key})
+        headers = {"X-API-Key": self._key}
+        if self.run_id is not None:
+            headers["X-Simulation-Run"] = str(self.run_id)
+        return self._request("POST", "/api/v1/readings", json=body, headers=headers)
+
+    # ---- simulation worker protocol (API key; see docs/api.md) ----
+    def claim(self, worker_id: str) -> dict | None:
+        r = self._request("POST", "/api/v1/simulation/worker/claim", json={"worker_id": worker_id},
+                          headers={"X-API-Key": self._key})
+        if r.status_code == 200:
+            return _json(r).get("run")
+        if r.status_code == 401:
+            raise AuthError("the API rejected the API key (HTTP 401): check API_KEY")
+        if is_transient_status(r.status_code):
+            # HTTP 500/501/408/429...: worth retrying later. (502/503/504 were already retried by _request.)
+            # Callers treat ServerUnavailable as "wait poll_interval and claim again".
+            raise ServerUnavailable(f"claim failed (HTTP {r.status_code})")
+        raise RejectedError(f"the API refused the worker's claim (HTTP {r.status_code}); retrying will not help: "
+                            "check API_KEY and that the API version supports simulation workers")
+
+    def heartbeat(self, run_id: int, payload: dict) -> httpx.Response:
+        return self._request("POST", f"/api/v1/simulation/runs/{run_id}/heartbeat", json=payload,
+                             headers={"X-API-Key": self._key})
+
+    def finish(self, run_id: int, payload: dict) -> httpx.Response:
+        return self._request("POST", f"/api/v1/simulation/runs/{run_id}/finish", json=payload,
+                             headers={"X-API-Key": self._key})
 
     def unresolved_alerts(self, engine_id: int) -> list[dict] | None:
         try:
@@ -260,6 +302,7 @@ class ReplayResult:
     plan: list[EngineSource]
     engines: dict[int, EngineStats]
     interrupted: bool = False
+    stopped: bool = False            # ended early because should_stop() returned True (worker mode)
 
 
 @dataclass
@@ -343,12 +386,37 @@ def _step(client, run: _Run, now, max_rewinds: int, max_cycles: int | None) -> E
     return ev
 
 
+def _sliced_wait(seconds, sleep, should_stop, get_interval, on_tick, result) -> bool:
+    """Wait in slices of <= 1 s so stop / speed changes / heartbeats stay responsive. True if a stop was requested."""
+    remaining = seconds
+    while remaining > 0:
+        chunk = min(remaining, 1.0)
+        sleep(chunk)
+        remaining -= chunk
+        if on_tick:
+            on_tick(result)
+        if should_stop and should_stop():
+            return True
+        if get_interval:
+            remaining = min(remaining, get_interval())  # a faster speed shortens the current wait
+    return False
+
+
 def run_replay(plan: list[EngineSource], client: ApiClient, *, interval: float = 1.0, max_cycles: int | None = None,
                max_rewinds: int = 3, now: Callable[[], datetime] = utc_now,
                sleep: Callable[[float], None] = time.sleep,
                on_event: Callable[[Event], None] | None = None,
-               on_note: Callable[[str], None] | None = None) -> ReplayResult:
-    """Replay `plan`. Each tick sends the next cycle of every unfinished engine, then waits `interval` seconds."""
+               on_note: Callable[[str], None] | None = None,
+               should_stop: Callable[[], bool] | None = None,
+               get_interval: Callable[[], float] | None = None,
+               on_tick: Callable[[ReplayResult], None] | None = None) -> ReplayResult:
+    """Replay `plan`. Each tick sends the next cycle of every unfinished engine, then waits `interval` seconds.
+
+    Worker hooks (all optional; without them behaviour is exactly the plain CLI replay):
+      should_stop()  checked after every tick and every <=1 s slice of the wait -> ends the replay early
+      get_interval() current desired interval (so speed changes apply to the next wait)
+      on_tick(result) called after every tick and every wait slice (used for heartbeats)
+    """
     result = ReplayResult(plan, {s.engine_id: EngineStats() for s in plan})
     note = on_note or (lambda _m: None)
     try:
@@ -368,8 +436,20 @@ def run_replay(plan: list[EngineSource], client: ApiClient, *, interval: float =
                     note(f"engine {r.src.engine_id}: cycle gap reported by server, rewound to cycle {r.next_cycle}")
                 elif ev is not None and on_event:
                     on_event(ev)
-            if interval > 0 and any(not r.done for r in runs):
-                sleep(interval)
+            if on_tick:
+                on_tick(result)
+            if should_stop and should_stop():
+                result.stopped = True
+                break
+            if any(not r.done for r in runs):
+                wait = get_interval() if get_interval else interval
+                if wait > 0:
+                    if should_stop or on_tick:
+                        if _sliced_wait(wait, sleep, should_stop, get_interval, on_tick, result):
+                            result.stopped = True
+                            break
+                    else:
+                        sleep(wait)
     except KeyboardInterrupt:
         result.interrupted = True
     for s in plan:

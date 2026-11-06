@@ -45,8 +45,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.model = None
     app.add_middleware(
-        CORSMiddleware, allow_origins=settings.cors_origin_list, allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type", "X-API-Key"],
+        CORSMiddleware, allow_origins=settings.cors_origin_list, allow_methods=["GET", "POST", "PATCH"],
+        allow_headers=["Content-Type", "X-API-Key", "X-Control-Key", "X-Simulation-Run"],
     )
     install_error_handlers(app)
     app.include_router(router)

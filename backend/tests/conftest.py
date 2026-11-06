@@ -1,7 +1,9 @@
 """Test fixtures.
 
 Integration tests run against a REAL PostgreSQL database (TEST_DATABASE_URL, e.g. pm_test). There is no SQLite
-fallback: if TEST_DATABASE_URL is missing the DB tests are skipped with a clear reason.
+fallback: if nothing is configured, or TEST_DATABASE_URL is missing, the DB tests are skipped with a clear reason.
+A configured-but-INVALID setup (e.g. a placeholder or too-short key in .env) aborts the run with the problem
+instead of silently skipping (see `resolve_test_database_url`).
 Safety: the test database name MUST end with "_test" (otherwise the run aborts) because the suite
 drops and recreates the schema via Alembic and truncates tables between tests.
 
@@ -11,6 +13,7 @@ the NASA data nor a trained model. `test_real_model.py` additionally checks the 
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,13 +30,16 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-from app.core.config import BACKEND_ROOT, Settings, get_settings
+from app.core.config import BACKEND_ROOT, REPO_ROOT, Settings, get_settings
 from app.main import create_app
 
 API_KEY = "test-api-key-0123456789abcdef"
 HEADERS = {"X-API-Key": API_KEY}
+CONTROL_KEY = "test-control-key-fedcba9876543210"
+CONTROL_HEADERS = {"X-Control-Key": CONTROL_KEY}
 VALUE_COLS = [*SETTING_COLS, *SENSOR_COLS]
-TABLES = "ingestion_errors, alerts, predictions, model_versions, sensor_readings, engines"
+TABLES = ("ingestion_errors, alerts, predictions, model_versions, sensor_readings, simulation_runs, "
+          "simulation_workers, engines")
 
 
 # ---- model artifacts --------------------------------------------------------------------------
@@ -73,12 +79,42 @@ class StubPredictor:
 
 
 # ---- database ---------------------------------------------------------------------------------
-@pytest.fixture(scope="session")
-def db_url() -> str:
+_SETTING_ENV_VARS = ("DATABASE_URL", "TEST_DATABASE_URL", "API_KEY", "CONTROL_API_KEY")
+
+
+def _db_settings_configured() -> bool:
+    """True if the developer configured anything: a .env file exists or a settings variable is set.
+
+    Only the file's existence is checked; it is never opened or read here.
+    """
+    return (REPO_ROOT / ".env").is_file() or any(k in os.environ for k in _SETTING_ENV_VARS)
+
+
+def _validation_problems(e: ValidationError) -> str:
+    """'field: problem' pairs for a settings error. Never includes input values (they may be secrets)."""
+    return "; ".join(
+        f"{'.'.join(str(p) for p in err['loc']) or 'settings'}: {err['msg']}"
+        for err in e.errors(include_input=False, include_url=False, include_context=False))
+
+
+def resolve_test_database_url(load_settings=get_settings, configured=_db_settings_configured) -> str:
+    """The guarded TEST_DATABASE_URL, or a pytest outcome explaining why database tests cannot run.
+
+    * nothing configured at all (no .env, no settings variables)  -> skip, with the reason (fresh checkout, no database)
+    * configured but the settings are INVALID (placeholder/short key, missing required value, bad thresholds, ...)
+                                                                   -> abort the run with the problems (never a silent skip)
+    * TEST_DATABASE_URL not set                                    -> skip, with the reason (no SQLite fallback)
+    * database name not ending in '_test' or equal to DATABASE_URL -> abort (unchanged safety guard)
+    """
     try:
-        s = get_settings()
-    except ValidationError:
-        pytest.skip("Settings unavailable (create .env from .env.example)")
+        s = load_settings()
+    except ValidationError as e:
+        if not configured():
+            pytest.skip("No .env file or DATABASE_URL/API_KEY in the environment: PostgreSQL integration tests are "
+                        "skipped (create .env from .env.example to run them)")
+        pytest.exit("Refusing to run: the settings are invalid, so the PostgreSQL tests cannot run "
+                    f"({_validation_problems(e)}). Fix .env (see .env.example). A configured but invalid setup is "
+                    "never silently skipped.", returncode=2)
     if s.test_database_url is None:
         pytest.skip("TEST_DATABASE_URL is not set; PostgreSQL integration tests need it (no SQLite fallback)")
     url = s.test_database_url.get_secret_value()
@@ -87,6 +123,11 @@ def db_url() -> str:
         pytest.exit("Refusing to run: TEST_DATABASE_URL must point to a database whose name ends with '_test' "
                     "and differs from DATABASE_URL.", returncode=2)
     return url
+
+
+@pytest.fixture(scope="session")
+def db_url() -> str:
+    return resolve_test_database_url()
 
 
 @pytest.fixture(scope="session")
@@ -134,7 +175,7 @@ def artifact_root(tmp_path) -> Path:
 def make_settings(db, artifact_root):
     def _make(**overrides) -> Settings:
         kw = dict(database_url=str(db.url.render_as_string(hide_password=False)), api_key=API_KEY,
-                  model_artifact_root=artifact_root)
+                  control_api_key=CONTROL_KEY, model_artifact_root=artifact_root)
         kw.update(overrides)
         return Settings(_env_file=None, **kw)
     return _make

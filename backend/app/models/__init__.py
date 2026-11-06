@@ -5,4 +5,6 @@ from app.models.tables import (  # noqa: F401
     ModelVersion,
     Prediction,
     SensorReading,
+    SimulationRun,
+    SimulationWorker,
 )

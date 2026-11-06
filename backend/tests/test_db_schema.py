@@ -73,3 +73,63 @@ def test_one_unresolved_alert_per_engine(db):
         alert(c, "open")
     with pytest.raises(IntegrityError), db.begin() as c:
         alert(c, "acknowledged")  # second unresolved for the same engine
+
+
+# ---- migration 0002: simulation control plane --------------------------------------------------
+def _run(c, status="queued", **over):
+    vals = dict(status=status, scenario="test", units='[1]', slot=0, off=0, iv=1.0)
+    vals.update(over)
+    c.execute(text("INSERT INTO simulation_runs (status, scenario, engine_units, replay_slot, id_offset, "
+                   "interval_seconds) VALUES (:status, :scenario, CAST(:units AS jsonb), :slot, :off, :iv)"), vals)
+
+
+def test_orm_and_migrations_agree_no_drift(migrated):
+    """`alembic check`: ORM metadata and the migrations describe the same schema (uses the guarded pm_test URL)."""
+    from alembic import command
+    from alembic.config import Config
+    from app.core.config import BACKEND_ROOT
+
+    cfg = Config(str(BACKEND_ROOT / "alembic.ini"))
+    cfg.attributes["url"] = migrated
+    command.check(cfg)  # raises CommandError on drift
+
+
+def test_only_one_active_simulation_run_at_a_time(db):
+    with db.begin() as c:
+        _run(c, "stopped")
+        _run(c, "failed")
+        _run(c, "completed")  # any number of finished runs
+        _run(c, "running")
+    for other in ("queued", "running", "stopping"):
+        with pytest.raises(IntegrityError), db.begin() as c:
+            _run(c, other)  # second active run, whatever its state
+    with db.begin() as c:
+        c.execute(text("UPDATE simulation_runs SET status='stopped' WHERE status='running'"))
+        _run(c, "queued")  # slot free again
+
+
+@pytest.mark.parametrize("over", [
+    {"status": "paused"}, {"scenario": "prod"}, {"slot": 10}, {"slot": -1}, {"iv": 0}, {"iv": -1.0}, {"iv": 99999},
+])
+def test_simulation_run_check_constraints(db, over):
+    with pytest.raises(IntegrityError), db.begin() as c:
+        _run(c, **over)
+
+
+def test_engine_origin_defaults_to_api_and_is_constrained(db):
+    with db.begin() as c:
+        _engine(c)
+    with db.connect() as c:
+        assert c.execute(text("SELECT origin FROM engines")).scalar() == "api"
+    with pytest.raises(IntegrityError), db.begin() as c:
+        c.execute(text("INSERT INTO engines (id, origin) VALUES (2, 'robot')"))
+
+
+def test_reading_run_link_is_nullable_and_enforced(db):
+    with db.begin() as c:
+        _engine(c)
+        _reading(c)  # ordinary ingestion: no run
+    with db.connect() as c:
+        assert c.execute(text("SELECT simulation_run_id FROM sensor_readings")).scalar() is None
+    with pytest.raises(IntegrityError), db.begin() as c:
+        c.execute(text("UPDATE sensor_readings SET simulation_run_id = 999"))  # FK violation

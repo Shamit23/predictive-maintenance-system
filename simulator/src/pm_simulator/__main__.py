@@ -1,4 +1,5 @@
-"""CLI:  python -m pm_simulator replay --scenario test --engines 24,57 --interval 1.0
+"""CLI:  python -m pm_simulator replay --scenario test --engines 24,57 --interval 1.0      (ad-hoc replay)
+       python -m pm_simulator worker                                                      (executes queued runs)
 
 Exit codes: 0 finished (or dry run) | 1 error | 2 bad arguments | 130 interrupted (progress is saved; re-run to resume)
 """
@@ -16,6 +17,7 @@ from pm_simulator.replay import (
     DEFAULT_OFFSETS, ApiClient, ReplayError, build_plan, format_event, format_summary, load_api_key, run_replay,
     safe_url,
 )
+from pm_simulator.worker import DEFAULT_HEARTBEAT_GRACE
 
 DEFAULT_API_URL = "http://127.0.0.1:8000"
 
@@ -58,7 +60,42 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--env-file", default=None, help="file to read API_KEY from if the env var is unset")
     r.add_argument("--timeout", type=float, default=10.0, help="per-request timeout in seconds")
     r.add_argument("--dry-run", action="store_true", help="show the plan; send nothing")
+
+    w = sub.add_parser("worker", help="run as a simulation worker: execute runs queued through the control API")
+    w.add_argument("--api-url", default=os.environ.get("PM_API_URL", DEFAULT_API_URL))
+    w.add_argument("--raw-dir", default=None, help="folder with the NASA FD001 files (default: ml/data/raw)")
+    w.add_argument("--env-file", default=None, help="file to read API_KEY from if the env var is unset")
+    w.add_argument("--poll-interval", type=float, default=2.0, help="seconds between claim polls while idle")
+    w.add_argument("--heartbeat-interval", type=float, default=2.0)
+    w.add_argument("--heartbeat-grace", type=float, default=DEFAULT_HEARTBEAT_GRACE,
+                   help="seconds of failing heartbeats before run ownership is re-verified. Heartbeat interval + "
+                        "grace + a failing attempt must stay well below SIM_LEASE_SECONDS (default 30); see "
+                        "docs/simulator.md")
+    w.add_argument("--max-outage", type=float, default=120.0, help="seconds to wait for a lost backend before giving up on a run")
+    w.add_argument("--timeout", type=float, default=10.0, help="per-request timeout in seconds")
+    w.add_argument("--once", action="store_true", help="execute at most one run (exit at once if none is queued)")
     return p
+
+
+def _worker_main(a, http_factory, out, sleep) -> int:
+    from pm_simulator.worker import new_worker_id, run_worker
+
+    if min(a.poll_interval, a.heartbeat_interval, a.timeout, a.heartbeat_grace) <= 0 or a.max_outage <= 0:
+        print("error: intervals, --timeout, --heartbeat-grace and --max-outage must be > 0", file=sys.stderr)
+        return 2
+    try:
+        key = load_api_key(env_file=Path(a.env_file) if a.env_file else None)  # API_KEY only; no control key
+    except ReplayError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    http = (http_factory or (lambda url, t: httpx.Client(base_url=url, timeout=t)))(a.api_url, a.timeout)
+    kw = {"sleep": sleep} if sleep else {}
+    worker_id = new_worker_id()
+    out(f"simulation worker {worker_id} -> {safe_url(a.api_url)} (SIMULATED replay of NASA C-MAPSS FD001, "
+        f"not real aircraft data). Waiting for queued runs; Ctrl+C to stop.")
+    return run_worker(ApiClient(http, key, **kw), worker_id=worker_id, raw_dir=a.raw_dir or None,
+                      poll_interval=a.poll_interval, heartbeat_interval=a.heartbeat_interval,
+                      max_outage=a.max_outage, heartbeat_grace=a.heartbeat_grace, once=a.once, log=out, **kw)
 
 
 def main(argv: list[str] | None = None, *, http_factory: Callable[[str, float], httpx.Client] | None = None,
@@ -68,6 +105,8 @@ def main(argv: list[str] | None = None, *, http_factory: Callable[[str, float], 
         a = parser.parse_args(argv)
     except SystemExit as e:  # argparse usage error -> 2
         return int(e.code or 0)
+    if a.command == "worker":
+        return _worker_main(a, http_factory, out, sleep)
     try:
         units = parse_units(a.engines)
     except ValueError as e:

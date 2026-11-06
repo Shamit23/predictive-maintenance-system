@@ -45,6 +45,27 @@ class InsufficientHistory(AppError):
         )
 
 
+class SimulationRunNotActive(AppError):
+    def __init__(self):
+        super().__init__("simulation_run_not_active", 409,
+                         "The simulation run named by X-Simulation-Run does not exist or is not running.")
+
+
+class EngineNotInRun(AppError):
+    def __init__(self, engine_id: int):
+        super().__init__("engine_not_in_run", 409,
+                         f"Engine {engine_id} is not part of the simulation run named by X-Simulation-Run.",
+                         {"engine_id": engine_id})
+
+
+class EngineOriginMismatch(AppError):
+    def __init__(self, engine_id: int, origin: str):
+        what = ("was created by simulation and accepts only readings from a simulation run" if origin == "simulation"
+                else "was created by ordinary ingestion and cannot receive simulated readings")
+        super().__init__("engine_origin_mismatch", 409, f"Engine {engine_id} {what}.",
+                         {"engine_id": engine_id, "origin": origin})
+
+
 class ModelUnavailable(AppError):
     def __init__(self, message: str = "No model is loaded."):
         super().__init__("model_unavailable", 503, message)

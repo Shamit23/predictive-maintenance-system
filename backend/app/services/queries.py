@@ -66,7 +66,7 @@ def _summary(e: Engine, p: Prediction | None, version: str | None, a: Alert | No
     return dict(
         id=e.id, last_cycle=e.last_cycle, last_reading_at=e.last_reading_at,
         latest_prediction=prediction_out(p, version) if p else None,
-        risk_category=p.risk_category if p else None,
+        risk_category=p.risk_category if p else None, origin=e.origin,
         alert_status=a.status if a else None, alert_severity=a.severity if a else None,
     )
 
