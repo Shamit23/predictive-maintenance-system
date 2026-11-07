@@ -10,20 +10,23 @@ export interface MetricEntry {
 }
 
 /**
- * Metrics are free-form on the backend (`dict`). Show only what is really there: finite numbers, with one level of
- * nesting flattened to dotted keys. Non-numeric values are ignored, nothing is invented.
+ * Metrics are free-form on the backend (`dict`) and nested to any depth, e.g. `validation_all_cycles.xgboost.mae`.
+ * Show only what is really there: finite numbers, with every nesting level flattened to a dotted key. Arrays (such
+ * as confusion matrices), booleans, strings and null are skipped and never traversed. Nothing is invented.
  */
 export function metricEntries(metrics: Record<string, unknown>): MetricEntry[] {
   const out: MetricEntry[] = []
-  for (const [key, value] of Object.entries(metrics)) {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      out.push({ key, value })
-    } else if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-      for (const [inner, v] of Object.entries(value)) {
-        if (typeof v === 'number' && Number.isFinite(v)) out.push({ key: `${key}.${inner}`, value: v })
+  const walk = (node: Record<string, unknown>, prefix: string) => {
+    for (const [key, value] of Object.entries(node)) {
+      const path = prefix ? `${prefix}.${key}` : key
+      if (typeof value === 'number') {
+        if (Number.isFinite(value)) out.push({ key: path, value })
+      } else if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+        walk(value as Record<string, unknown>, path)
       }
     }
   }
+  walk(metrics, '')
   return out
 }
 

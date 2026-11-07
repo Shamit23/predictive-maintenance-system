@@ -5,7 +5,7 @@ import { HttpResponse, http } from 'msw'
 import { MemoryRouter } from 'react-router'
 import { describe, expect, it } from 'vitest'
 import App from '../App'
-import { errorEnvelope, okHandlers, readyBad, simulation } from '../test/fixtures'
+import { errorEnvelope, model, okHandlers, readyBad, simulation } from '../test/fixtures'
 import { server } from '../test/server'
 
 function renderApp() {
@@ -32,11 +32,23 @@ describe('SystemPage', () => {
     expect(card('Simulation').getByText('No active run.')).toBeInTheDocument()
     expect(card('Simulation').getByText('#7')).toBeInTheDocument()
     expect(await card('Active model').findByText('xgb-test-1')).toBeInTheDocument()
-    // Only numeric metrics actually returned are shown (nested flattened, strings ignored).
-    expect(card('Active model').getByText('rmse')).toBeInTheDocument()
-    expect(card('Active model').getByText('17.250')).toBeInTheDocument()
-    expect(card('Active model').getByText('nested.mae')).toBeInTheDocument()
-    expect(card('Active model').queryByText('note')).not.toBeInTheDocument()
+    // Nested numeric metrics (real backend structure) are flattened to dotted keys; arrays are not shown.
+    const active = card('Active model')
+    expect(active.queryByText('The backend returned no numeric metrics for this model.')).not.toBeInTheDocument()
+    expect(active.getByText('validation_all_cycles.xgboost.mae').nextElementSibling).toHaveTextContent('9.683')
+    expect(active.getByText('validation_all_cycles.xgboost.nasa_score').nextElementSibling).toHaveTextContent('20288.381')
+    expect(active.getByText('validation_all_cycles.xgboost.n').nextElementSibling).toHaveTextContent('3852')
+    expect(active.getByText('classification_test_last_cycle.xgb_classifier.f1').nextElementSibling).toHaveTextContent('0.844')
+    expect(active.queryByText(/confusion_matrix/)).not.toBeInTheDocument()
+  })
+
+  it('shows the empty-metrics message only when the model really has no numeric metrics', async () => {
+    server.use(
+      http.get('*/api/v1/models/active', () => HttpResponse.json({ ...model, metrics: {} })),
+      ...okHandlers,
+    )
+    renderApp()
+    expect(await card('Active model').findByText('The backend returned no numeric metrics for this model.')).toBeInTheDocument()
   })
 
   it('renders "Not ready" from a 503 ReadyOut body without treating it as an outage', async () => {

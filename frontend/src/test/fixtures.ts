@@ -55,7 +55,18 @@ export const model = {
   activated_at: '2026-01-01T01:00:00Z',
   rul_cap: 125,
   failure_horizon: 30,
-  metrics: { rmse: 17.25, nested: { mae: 12.5, label: 'x' }, note: 'text' },
+  // Same structure as the real GET /api/v1/models/active response (values abbreviated): groups nest model names,
+  // which nest numeric metrics; classification groups also carry a confusion_matrix array.
+  metrics: {
+    validation_all_cycles: {
+      xgboost: { n: 3852, mae: 9.68332642731513, rmse: 14.626768158251146, nasa_score: 20288.380612864825 },
+      baseline_ridge: { n: 3852, mae: 16.385875117930812 },
+    },
+    test_last_cycle_vs_true_rul: { xgboost: { n: 100, mae: 12.936815857887268 } },
+    classification_test_last_cycle: {
+      xgb_classifier: { n: 100, f1: 0.8444444444444444, positives: 25, confusion_matrix: [[74, 1], [6, 19]] },
+    },
+  },
   feature_config: {},
 }
 
