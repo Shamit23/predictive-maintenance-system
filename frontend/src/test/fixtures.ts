@@ -46,6 +46,16 @@ export const simulation = {
   },
 }
 
+const reg = (n: number, mae: number, rmse: number, nasa_score: number) => ({ n, mae, rmse, nasa_score })
+const cls = (n: number, f1: number, recall: number, positives: number, precision: number, confusion_matrix: number[][]) => ({
+  n,
+  f1,
+  recall,
+  positives,
+  precision,
+  confusion_matrix,
+})
+
 export const model = {
   version: 'xgb-test-1',
   model_type: 'xgboost',
@@ -55,16 +65,29 @@ export const model = {
   activated_at: '2026-01-01T01:00:00Z',
   rul_cap: 125,
   failure_horizon: 30,
-  // Same structure as the real GET /api/v1/models/active response (values abbreviated): groups nest model names,
-  // which nest numeric metrics; classification groups also carry a confusion_matrix array.
+  // The complete structure and values of the real GET /api/v1/models/active response observed during integration
+  // testing: six groups holding 52 numeric metrics (12/12/4/4/10/10); classification groups also carry a
+  // confusion_matrix array that must never be shown.
   metrics: {
     validation_all_cycles: {
-      xgboost: { n: 3852, mae: 9.68332642731513, rmse: 14.626768158251146, nasa_score: 20288.380612864825 },
-      baseline_ridge: { n: 3852, mae: 16.385875117930812 },
+      xgboost: reg(3852, 9.68332642731513, 14.626768158251146, 20288.380612864825),
+      baseline_ridge: reg(3852, 16.385875117930812, 21.03458602946515, 38422.911271581586),
+      baseline_constant: reg(3852, 36.823879018035264, 41.955876405977904, 1344550.5271230189),
     },
-    test_last_cycle_vs_true_rul: { xgboost: { n: 100, mae: 12.936815857887268 } },
+    test_last_cycle_vs_true_rul: {
+      xgboost: reg(100, 12.936815857887268, 17.982162045567026, 600.3812832397961),
+      baseline_ridge: reg(100, 17.42487596942518, 21.65182033984193, 1279.7792295082925),
+      baseline_constant: reg(100, 35.90906132665832, 43.23502830004598, 35722.89002116715),
+    },
+    validation_final_cycle_only: { xgboost: reg(20, 2.3987643331289292, 3.154135753636578, 5.994678350178558) },
+    test_last_cycle_vs_capped_rul: { xgboost: reg(100, 11.866815857887268, 16.780462629617467, 544.701093919078) },
     classification_test_last_cycle: {
-      xgb_classifier: { n: 100, f1: 0.8444444444444444, positives: 25, confusion_matrix: [[74, 1], [6, 19]] },
+      xgb_classifier: cls(100, 0.8444444444444444, 0.76, 25, 0.95, [[74, 1], [6, 19]]),
+      from_regressor_threshold: cls(100, 0.8181818181818182, 0.72, 25, 0.9473684210526315, [[74, 1], [7, 18]]),
+    },
+    classification_validation_all_cycles: {
+      xgb_classifier: cls(3852, 0.8864774624373957, 0.8564516129032258, 620, 0.9186851211072664, [[3185, 47], [89, 531]]),
+      from_regressor_threshold: cls(3852, 0.8898377455166524, 0.8403225806451613, 620, 0.9455535390199638, [[3202, 30], [99, 521]]),
     },
   },
   feature_config: {},

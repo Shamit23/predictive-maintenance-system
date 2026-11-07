@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError, NetworkError, ResponseValidationError } from '../api/errors'
-import { metricEntries } from '../lib/format'
+import { groupMetrics, metricEntries } from '../lib/format'
 import { pollInterval, shouldRetry } from './policy'
 
 describe('pollInterval', () => {
@@ -73,5 +73,125 @@ describe('metricEntries', () => {
   it('returns nothing for empty metrics or empty groups', () => {
     expect(metricEntries({})).toEqual([])
     expect(metricEntries({ a: {}, b: { c: {} } })).toEqual([])
+  })
+})
+
+describe('groupMetrics', () => {
+  it('splits each key at its FIRST dot into group and in-group name', () => {
+    expect(groupMetrics([{ key: 'validation_all_cycles.xgboost.mae', value: 9.5 }])).toEqual([
+      { group: 'validation_all_cycles', entries: [{ name: 'xgboost.mae', value: 9.5 }] },
+    ])
+  })
+
+  it('collects several entries per group and several groups, preserving input order', () => {
+    const grouped = groupMetrics([
+      { key: 'b.x.n', value: 1 },
+      { key: 'a.y.n', value: 2 },
+      { key: 'b.x.mae', value: 3 },
+      { key: 'a.z', value: 4 },
+    ])
+    expect(grouped.map((g) => g.group)).toEqual(['b', 'a']) // first-appearance order, not alphabetical
+    expect(grouped[0]?.entries).toEqual([
+      { name: 'x.n', value: 1 },
+      { name: 'x.mae', value: 3 },
+    ])
+    expect(grouped[1]?.entries).toEqual([
+      { name: 'y.n', value: 2 },
+      { name: 'z', value: 4 },
+    ])
+  })
+
+  it('places dotless keys in a General group instead of dropping them', () => {
+    expect(groupMetrics([{ key: 'rmse', value: 1 }, { key: 'g.m', value: 2 }, { key: 'mae', value: 3 }])).toEqual([
+      {
+        group: 'General',
+        entries: [
+          { name: 'rmse', value: 1 },
+          { name: 'mae', value: 3 },
+        ],
+      },
+      { group: 'g', entries: [{ name: 'm', value: 2 }] },
+    ])
+  })
+
+  it('returns an empty array for empty input', () => {
+    expect(groupMetrics([])).toEqual([])
+  })
+
+  it('does not split on a leading dot: the metric goes to General under its full key', () => {
+    expect(groupMetrics([{ key: '.lead', value: 1 }])).toEqual([
+      { group: 'General', entries: [{ name: '.lead', value: 1 }] },
+    ])
+  })
+
+  it('does not split on a trailing dot: no blank label, the full key is kept', () => {
+    expect(groupMetrics([{ key: 'trail.', value: 1 }])).toEqual([
+      { group: 'General', entries: [{ name: 'trail.', value: 1 }] },
+    ])
+  })
+
+  it('still splits at the first dot when later dots are awkward', () => {
+    expect(groupMetrics([{ key: 'a..b', value: 1 }, { key: 'a.b.', value: 2 }])).toEqual([
+      {
+        group: 'a',
+        entries: [
+          { name: '.b', value: 1 },
+          { name: 'b.', value: 2 },
+        ],
+      },
+    ])
+  })
+
+  it('keeps colliding metrics instead of merging or dropping them', () => {
+    // A dotted top-level key and a nested object produce the same flattened key; both values must survive.
+    const colliding = metricEntries({ 'a.b': 1, a: { b: 2 } })
+    expect(colliding).toEqual([
+      { key: 'a.b', value: 1 },
+      { key: 'a.b', value: 2 },
+    ])
+    expect(groupMetrics(colliding)).toEqual([
+      {
+        group: 'a',
+        entries: [
+          { name: 'b', value: 1 },
+          { name: 'b', value: 2 },
+        ],
+      },
+    ])
+  })
+
+  it('keeps a dotless key and a "General.x" key side by side in General', () => {
+    expect(groupMetrics([{ key: 'x', value: 1 }, { key: 'General.x', value: 2 }])).toEqual([
+      {
+        group: 'General',
+        entries: [
+          { name: 'x', value: 1 },
+          { name: 'x', value: 2 },
+        ],
+      },
+    ])
+  })
+
+  it('never loses an entry across all the awkward shapes at once', () => {
+    const input = [
+      { key: 'rmse', value: 1 },
+      { key: '.lead', value: 2 },
+      { key: 'trail.', value: 3 },
+      { key: 'a.b', value: 4 },
+      { key: 'a.b', value: 5 },
+      { key: 'General.x', value: 6 },
+    ]
+    const total = groupMetrics(input).reduce((sum, g) => sum + g.entries.length, 0)
+    expect(total).toBe(input.length)
+    expect(groupMetrics(input).flatMap((g) => g.entries.map((e) => e.value)).sort()).toEqual([1, 2, 3, 4, 5, 6])
+  })
+
+  it('neither drops nor duplicates entries', () => {
+    const input = metricEntries({ top: 1, a: { x: { n: 1, m: 2 }, y: 3 }, b: { z: { w: 4 } }, c: { c: 0 } })
+    const grouped = groupMetrics(input)
+    const total = grouped.reduce((sum, g) => sum + g.entries.length, 0)
+    expect(total).toBe(input.length)
+    const rebuilt = grouped.flatMap((g) => g.entries.map((e) => (g.group === 'General' ? e.name : `${g.group}.${e.name}`)))
+    expect(rebuilt.sort()).toEqual(input.map((e) => e.key).sort())
   })
 })

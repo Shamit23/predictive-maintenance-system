@@ -2,7 +2,8 @@ import { useState } from 'react'
 import type { Model, Run } from '../api/schemas'
 import { Badge, QueryCard, Row } from '../components/ui'
 import type { Tone } from '../components/ui'
-import { formatDateTime, formatMetric, metricEntries } from '../lib/format'
+import { formatDateTime, formatMetric, groupMetrics, metricEntries } from '../lib/format'
+import type { MetricGroup } from '../lib/format'
 import { useSystemStatus } from '../query/useSystemStatus'
 
 const runTone: Record<Run['status'], Tone> = {
@@ -32,8 +33,35 @@ function RunSummary({ run }: { run: Run }) {
   )
 }
 
+/**
+ * One metric group as a native disclosure: keyboard operable and announced by assistive tech without any state of our
+ * own. `open` only sets the initial state, so a user's toggle survives refetches (the key is the stable group name).
+ * The summary stays a normal list-item box so the browser's disclosure marker remains visible.
+ */
+function MetricGroupSection({ group, defaultOpen }: { group: MetricGroup; defaultOpen: boolean }) {
+  const count = group.entries.length
+  return (
+    <details open={defaultOpen}>
+      <summary className="cursor-pointer rounded-md py-2.5 font-medium hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600">
+        <span className="break-all">{group.group}</span>{' '}
+        <span className="text-sm font-normal text-slate-500">
+          ({count} {count === 1 ? 'metric' : 'metrics'})
+        </span>
+      </summary>
+      <dl className="divide-y divide-slate-100 pb-2 pl-5">
+        {/* Index keys: names can repeat inside a group (colliding nested/dotted keys), and rows are stateless. */}
+        {group.entries.map((m, index) => (
+          <Row key={index} label={m.name}>
+            {formatMetric(m.value)}
+          </Row>
+        ))}
+      </dl>
+    </details>
+  )
+}
+
 function ModelDetails({ model }: { model: Model }) {
-  const metrics = metricEntries(model.metrics)
+  const groups = groupMetrics(metricEntries(model.metrics))
   return (
     <>
       <dl className="divide-y divide-slate-100">
@@ -46,16 +74,14 @@ function ModelDetails({ model }: { model: Model }) {
         <Row label="Failure horizon">{model.failure_horizon}</Row>
       </dl>
       <h3 className="mt-4 mb-1 font-semibold">Metrics</h3>
-      {metrics.length === 0 ? (
+      {groups.length === 0 ? (
         <p className="text-slate-500">The backend returned no numeric metrics for this model.</p>
       ) : (
-        <dl className="divide-y divide-slate-100">
-          {metrics.map((m) => (
-            <Row key={m.key} label={m.key}>
-              {formatMetric(m.value)}
-            </Row>
+        <div className="divide-y divide-slate-100">
+          {groups.map((g, index) => (
+            <MetricGroupSection key={g.group} group={g} defaultOpen={index === 0} />
           ))}
-        </dl>
+        </div>
       )}
     </>
   )
@@ -111,7 +137,7 @@ export default function SystemPage() {
           )}
         </QueryCard>
 
-        <QueryCard title="Simulation" query={simulation}>
+        <QueryCard title="Simulation" query={simulation} className="self-start">
           {(data) => (
             <>
               <dl className="divide-y divide-slate-100">

@@ -24,10 +24,13 @@ export function Row({ label, children }: { label: string; children: ReactNode })
   )
 }
 
-export function Card({ title, children }: { title: string; children: ReactNode }) {
+export function Card({ title, className, children }: { title: string; className?: string; children: ReactNode }) {
   const id = `card-${title.toLowerCase().replace(/\W+/g, '-')}`
   return (
-    <section aria-labelledby={id} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+    <section
+      aria-labelledby={id}
+      className={`rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5${className ? ` ${className}` : ''}`}
+    >
       <h2 id={id} className="mb-3 text-lg font-semibold">
         {title}
       </h2>
@@ -53,10 +56,13 @@ export function ErrorNotice({ error }: { error: unknown }) {
 export function QueryCard<T>({
   title,
   query,
+  className,
   children,
 }: {
   title: string
   query: UseQueryResult<T, unknown>
+  /** Extra classes for the card itself (the grid item), e.g. `self-start`. */
+  className?: string
   children: (data: T) => ReactNode
 }) {
   let body: ReactNode
@@ -68,7 +74,7 @@ export function QueryCard<T>({
     body = <p role="status" className="text-slate-500">Loading…</p>
   }
   return (
-    <Card title={title}>
+    <Card title={title} className={className}>
       {body}
       {query.data !== undefined && query.isError && (
         <div className="mt-3">

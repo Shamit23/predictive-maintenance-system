@@ -30,6 +30,40 @@ export function metricEntries(metrics: Record<string, unknown>): MetricEntry[] {
   return out
 }
 
+export interface MetricGroup {
+  group: string
+  entries: { name: string; value: number }[]
+}
+
+/** Group for metrics that cannot be split into a group and a name, so a top-level scalar is never dropped. */
+const GENERAL_GROUP = 'General'
+
+/**
+ * Group flat dotted metrics by their first key segment: `validation_all_cycles.xgboost.mae` becomes group
+ * `validation_all_cycles`, name `xgboost.mae`. Groups and the entries inside them keep their input order, and every
+ * input entry appears exactly once in the output, so no metric is ever lost.
+ *
+ * A key is only split when it has text on both sides of its first dot. Dotless keys (`rmse`) and keys with a leading
+ * or trailing dot (`.a`, `a.`) go to `General` under their full key, so no label is ever blank. Entries are not
+ * de-duplicated: colliding keys (e.g. `{"a.b": 1, a: {b: 2}}`) both survive, which is why callers must not use a
+ * metric name as a unique key.
+ */
+export function groupMetrics(entries: MetricEntry[]): MetricGroup[] {
+  const groups = new Map<string, MetricGroup>()
+  for (const { key, value } of entries) {
+    const dot = key.indexOf('.')
+    const grouped = dot > 0 && dot < key.length - 1
+    const groupName = grouped ? key.slice(0, dot) : GENERAL_GROUP
+    let group = groups.get(groupName)
+    if (!group) {
+      group = { group: groupName, entries: [] }
+      groups.set(groupName, group)
+    }
+    group.entries.push({ name: grouped ? key.slice(dot + 1) : key, value })
+  }
+  return [...groups.values()]
+}
+
 export function formatMetric(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(3)
 }
