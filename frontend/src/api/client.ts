@@ -11,13 +11,19 @@ export interface RawResponse {
 
 /**
  * GET a same-origin path. Only relative paths are used (the Vite proxy forwards them to FastAPI), so no backend
- * address lives in application code. No headers are added: this milestone only calls public, read-only endpoints.
+ * address lives in application code. The only header is `Accept`, and `credentials: 'omit'` is explicit so the browser
+ * never attaches cookies or HTTP auth to these public, read-only requests (fetch's default would send same-origin ones).
  */
 export async function getRaw(path: string, signal?: AbortSignal): Promise<RawResponse> {
   let response: Response
   try {
     // Resolved against the page origin so it also works where fetch requires absolute URLs (tests).
-    response = await fetch(new URL(path, window.location.origin), { method: 'GET', signal, headers: { Accept: 'application/json' } })
+    response = await fetch(new URL(path, window.location.origin), {
+      method: 'GET',
+      credentials: 'omit',
+      signal,
+      headers: { Accept: 'application/json' },
+    })
   } catch (cause) {
     if (signal?.aborted) throw cause // cancellation is not a network failure
     throw new NetworkError('Could not reach the API', { cause })
@@ -56,6 +62,22 @@ export function parseBody<T>(path: string, schema: ZodType<T>, body: unknown): T
     )
   }
   return result.data
+}
+
+export type QueryParams = Record<string, string | number | undefined>
+
+/**
+ * Append query parameters to a same-origin path. Undefined and empty values are omitted, so an unset filter is never
+ * sent as `?risk=` (which the backend would reject).
+ */
+export function buildPath(path: string, params: QueryParams = {}): string {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === '') continue
+    search.set(key, String(value))
+  }
+  const query = search.toString()
+  return query ? `${path}?${query}` : path
 }
 
 export async function getJson<T>(path: string, schema: ZodType<T>, signal?: AbortSignal): Promise<T> {

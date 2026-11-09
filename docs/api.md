@@ -47,6 +47,8 @@ validation errors name the problem only; they never print the configuration valu
 
 Simulation control plane: see the section below. Not implemented yet: drift, retraining, promotion/rollback endpoints (later phases).
 
+The web frontend (`frontend/`) only calls `GET` endpoints, without credentials; which ones are listed in `frontend/README.md`. It exposes no ingestion, acknowledge or simulation-control action.
+
 ## Ingestion `POST /api/v1/readings`
 Body: `engine_id` (1..1,000,000), `cycle` (1..100,000), optional `event_time` (must carry a timezone, not > 1 day in the future;
 if omitted the server records its receipt time), plus all 24 values `setting_1..3`, `s_1..s_21` (finite, |x| <= 1e6). Unknown fields are rejected.

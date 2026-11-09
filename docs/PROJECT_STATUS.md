@@ -1,6 +1,6 @@
 # Project status
 
-_Last updated: 2026-11-02. Status words: **Tested** = automated tests were run and passed; **Verified live** = exercised against a running server;
+_Last updated: 2026-11-10. Status words: **Tested** = automated tests were run and passed; **Verified live** = exercised against a running server;
 **Not tested** = code exists but was not exercised._
 
 ## Phase 1: ML core — committed `c650030`, Tested
@@ -16,7 +16,7 @@ envelope. See `docs/api.md`. Not tested: concurrent ingestion for the same engin
 `python -m pm_simulator replay ...` replays FD001 through the ingestion API: exact source values, bounded retries, validated/bounded cycle-gap
 handling, resume with handshake, SIMULATED GROUND TRUTH (train) vs EVALUATION ONLY (test) labelling. Details in `docs/simulator.md`.
 
-## Phase 4b: Simulation control plane — **implemented and tested, uncommitted; migration `0002` NOT applied to `pm_dev`**
+## Phase 4b: Simulation control plane — committed `efad510` and pushed; **migration `0002` NOT applied to `pm_dev`**
 | Item | Status |
 |---|---|
 | Migration `0002` (additive): `simulation_runs`, `simulation_workers`, `engines.origin`, `sensor_readings.simulation_run_id` | Tested on `pm_test` (suite runs base->head and `alembic check` finds no drift). **Not applied to `pm_dev`** |
@@ -33,7 +33,7 @@ handling, resume with handshake, SIMULATED GROUND TRUTH (train) vs EVALUATION ON
 | Worker (`python -m pm_simulator worker`): claim -> replay -> heartbeat -> finish, stop, speed change, outage reconnect, crash takeover, Ctrl+C | Tested (fake control API and real API on `pm_test`) |
 | Real API restart mid-run (replacement app instance), worker crash and replacement, outage beyond `--max-outage` | Tested on `pm_test` (simulated by dropping the connection / swapping the app instance; not a real OS-level restart) |
 | Live control-plane smoke on `pm_dev` (real server + worker process) | **Not run** (needs your approval to apply `0002` to `pm_dev` and a `CONTROL_API_KEY` in `.env`) |
-| UI | Not started (Phase 3). Control-key handling approach for the UI: `docs/decisions/0001-simulation-control-plane.md` |
+| UI | The Phase 3 frontend (below) is read-only: it has no start/stop/speed controls and no acknowledge action. Control-key handling approach for a future control UI: `docs/decisions/0001-simulation-control-plane.md` |
 
 ### Test results (actual runs, 2026-11-02, after the final code change)
 - Backend: `239 passed, 0 skipped` (was 90 before 4b; +149: migration/drift/schema 11, config 2 + 21 key-validation + 1 worker-defaults margin, marker 15,
@@ -89,6 +89,24 @@ that relied on the old reuse were adapted (a second run now needs another engine
 under the id limit, but that needs the schema bound and DB check changed; not done). The check happens at creation; an engine created by ordinary ingestion afterwards is still caught by the
 origin lock at ingestion (the run fails with `engine_origin_mismatch`).
 
+## Phase 3: React frontend (`frontend/`): read-only dashboard
+Details, routes, endpoints used and limitations: `frontend/README.md`.
+
+| Milestone | Status |
+|---|---|
+| M0 + M1: scaffold, typed read-only API layer, System page | Committed `5a213a2`, pushed. **Tested** (MSW). System page **verified live** in a real browser against a running backend |
+| M1 fix: render the model's nested metrics | Committed `9fa6c02`, pushed. Found by the live check (the real `metrics` is nested two levels deep; the first fixture was flat) |
+| M1.1: grouped, collapsible metrics; Simulation card at natural height | Committed `006f197`, pushed. **Tested**; System page **verified live** |
+| M2.1: read-only Engines, Alerts, Models pages and Engine detail with an inline-SVG RUL chart; URL filters and pagination; accessibility remediation (skip link, titles, route announcements, busy and live regions) | Implemented, **uncommitted**. **Tested** (MSW). **Not verified in a live browser** |
+
+- Frontend test results (2026-11-10): 444 tests in 19 files pass; type-check, lint and production build pass. Nothing in the frontend talks to a real
+  backend or database in tests.
+- Not part of the frontend: alert acknowledgement (needs the ingestion `API_KEY`, which the browser must not hold), simulation controls, a simulation-history
+  page (the simulation `GET` endpoints apply lazy expiry, a database write), backend sorting or fleet-summary endpoints. Drift monitoring, retraining, model
+  promotion and rollback are not implemented anywhere.
+- Live behaviour on `pm_dev` (still at `0001`): the System page showed `/ready` as "not ready (migrations outdated)" and `/api/v1/simulation` returned HTTP 500,
+  both handled. The engine, alert-with-engine and readings code paths need `0002` and have not been run live.
+
 ## Commands (Windows PowerShell, repo root, venv `.venv`)
 ```powershell
 .\.venv\Scripts\python -m pip install -e ml -e backend -e simulator    # once
@@ -103,6 +121,9 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/simulation/runs
 Invoke-RestMethod http://127.0.0.1:8000/api/v1/simulation                       # status (no key needed)
 cd backend; ..\.venv\Scripts\python -m pytest                          # backend tests (TEST_DATABASE_URL, name ends _test)
 cd ..\simulator; ..\.venv\Scripts\python -m pytest ; cd ..\ml; ..\.venv\Scripts\python -m pytest
+# frontend (Node 22.22+/24.15+/26+; the dev server proxies /api, /health and /ready to http://127.0.0.1:8000):
+cd ..\frontend; npm ci; npm run dev                                    # http://localhost:5173 (needs the API running)
+npm test; npm run typecheck; npm run lint; npm run build              # frontend checks (tests need no backend or database)
 ```
 Docs: `docs/api.md`, `docs/simulator.md`, `docs/decisions/0001-simulation-control-plane.md`. Interactive API: http://127.0.0.1:8000/docs while running.
 
@@ -124,11 +145,14 @@ Docs: `docs/api.md`, `docs/simulator.md`, `docs/decisions/0001-simulation-contro
   fallback). Only a configured-but-invalid setup aborts the run.
 - Downgrading migration `0002` and re-upgrading would relabel simulated engines as `origin='api'` (origin is dropped by the downgrade).
 - Alerts: no hysteresis; thresholds are demo values. Concurrent ingestion for one engine is untested. Phase 1 leftovers: no EDA notebook, no README.
-  Docker, drift, retraining, MLflow: not started. Frontend: Phase 3 M0+M1 (scaffold, typed read-only API layer, System page) is implemented in `frontend/`
-  but **not yet committed**; fleet, engine, alerts, simulation-control and model pages are not started. See `frontend/README.md`.
+  Docker, drift, retraining, MLflow: not started. Frontend: read-only pages exist (see the Phase 3 section and `frontend/README.md`); simulation controls, alert
+  acknowledgement and a simulation-history page are not built. There is no root `README.md`.
 
 ## Exact next step
-1. Review the Phase 4b diff and approve a commit/push.
-2. Then, with your explicit approval: add `CONTROL_API_KEY` to your `.env` (a different long random value; I can generate it into the file without printing
-   it), apply `0002` to `pm_dev`, and run the live control-plane smoke test (start worker, queue/stop/re-pace a run, kill and restart the worker, restart the API).
-3. After that: **Phase 3** (React frontend) with live control and a "simulated" badge from `engines.origin`.
+1. Review the uncommitted Phase 3 M2.1 frontend work and, with explicit approval, commit it (push needs a separate approval).
+2. Live verification of the new pages, and of the control plane, needs a database at migration `0002`. Proposed, not done and needing its own approval: an
+   **isolated** database at `0002` rather than applying `0002` to `pm_dev`. With approval also: a `CONTROL_API_KEY` in `.env` (a different long random value,
+   generated into the file without printing it) and the live control-plane smoke test (start worker, queue/stop/re-pace a run, kill and restart the worker,
+   restart the API).
+3. Later, each needing its own approval: a control UI (the control key typed at runtime and kept in memory only), alert acknowledgement (needs a backend
+   authentication decision first), a read-only backend path for simulation history, backend sorting and fleet-summary endpoints, then drift and retraining (Phase 5).

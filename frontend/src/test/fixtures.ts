@@ -95,10 +95,98 @@ export const model = {
 
 export const errorEnvelope = (code: string, message: string) => ({ error: { code, message, details: {} } })
 
-/** Handlers for the four System-page endpoints; override individual ones per test with server.use(). */
+// ---- models list (GET /api/v1/models): newest first; the active one carries the full real metrics ----------------
+
+export const candidateModel = {
+  ...model,
+  version: 'xgb-test-2',
+  status: 'candidate',
+  activated_at: null,
+  metrics: { validation_all_cycles: { xgboost: reg(3852, 10.5, 15.25, 21000.5) } },
+}
+
+export const archivedModel = {
+  ...model,
+  version: 'xgb-test-0',
+  status: 'archived',
+  dataset: null,
+  metrics: {},
+}
+
+/** Controls for a test backend: fail selected requests (1-based count), or keep a response pending. */
+export interface BackendOptions {
+  fail?: (requestNumber: number) => boolean
+  hold?: (requestNumber: number) => Promise<void> | undefined
+}
+
+/** A promise a test can settle on demand, to hold a response open while asserting the in-between UI. */
+export function deferred() {
+  let release!: () => void
+  const promise = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  return { promise, release }
+}
+
+/** Builds a `Page` like the backend's list endpoints. */
+export const page = <T>(items: T[], total = items.length, limit = 50, offset = 0) => ({ items, total, limit, offset })
+
+export const modelsPage = page([candidateModel, model, archivedModel], 3, 10, 0)
+
+// ---- engines, predictions, alerts (used from Checkpoint 2 on) ---------------------------------------------------
+
+export const predictionOut = (cycle: number, rul: number, risk: 'normal' | 'warning' | 'critical', version = 'xgb-test-1') => ({
+  id: cycle + 1000,
+  engine_id: 24,
+  cycle,
+  predicted_rul: rul,
+  failure_score: 0.5,
+  risk_category: risk,
+  model_version: version,
+  history_len: cycle,
+  created_at: '2026-01-01T10:00:00Z',
+})
+
+export const engineSummary = (id: number, over: Record<string, unknown> = {}) => ({
+  id,
+  last_cycle: 100,
+  last_reading_at: '2026-01-01T10:00:00Z',
+  latest_prediction: predictionOut(100, 45.5, 'warning'),
+  risk_category: 'warning',
+  origin: 'simulation',
+  alert_status: 'open',
+  alert_severity: 'warning',
+  ...over,
+})
+
+export const engineDetail = {
+  ...engineSummary(24),
+  created_at: '2026-01-01T09:00:00Z',
+  reading_count: 100,
+  prediction_count: 100,
+}
+
+export const alertOut = (id: number, over: Record<string, unknown> = {}) => ({
+  id,
+  engine_id: 24,
+  severity: 'warning',
+  status: 'open',
+  predicted_rul: 45.5,
+  prediction_id: 1100,
+  model_version: 'xgb-test-1',
+  created_at: '2026-01-01T10:00:00Z',
+  updated_at: '2026-01-01T10:00:00Z',
+  acknowledged_at: null,
+  resolved_at: null,
+  resolution_reason: null,
+  ...over,
+})
+
+/** Handlers for the System page and the Models page; override individual ones per test with server.use(). */
 export const okHandlers = [
   http.get('*/health', () => HttpResponse.json({ status: 'ok' })),
   http.get('*/ready', () => HttpResponse.json(readyOk)),
   http.get('*/api/v1/simulation', () => HttpResponse.json(simulation)),
   http.get('*/api/v1/models/active', () => HttpResponse.json(model)),
+  http.get('*/api/v1/models', () => HttpResponse.json(modelsPage)),
 ]

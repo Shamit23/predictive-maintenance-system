@@ -67,3 +67,25 @@ export function groupMetrics(entries: MetricEntry[]): MetricGroup[] {
 export function formatMetric(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(3)
 }
+
+/** Predicted RUL in cycles, one decimal place. */
+export function formatRul(value: number): string {
+  return value.toFixed(1)
+}
+
+/**
+ * Human wording for an alert's `resolution_reason`. The backend documents two reasons: `recovered` (the engine returned
+ * to normal) and `escalated` (an acknowledged alert worsened and was replaced by a new, more severe one). Anything
+ * else is shown as received rather than guessed at.
+ */
+export function describeResolution(reason: string | null): string | null {
+  if (reason === null) return null
+  if (reason === 'recovered') return 'Recovered'
+  if (reason === 'escalated') return 'Escalated (replaced by a new alert)'
+  return reason
+}
+
+/** `1 engine`, `2 engines`: the singular form for exactly one, otherwise the plural (default: singular + "s"). */
+export function pluralize(count: number, singular: string, plural: string = `${singular}s`): string {
+  return count === 1 ? singular : plural
+}

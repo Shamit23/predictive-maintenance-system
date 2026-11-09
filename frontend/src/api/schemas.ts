@@ -81,3 +81,81 @@ export const simulationSchema = z.object({
   }),
 })
 export type Simulation = z.infer<typeof simulationSchema>
+
+// ---- paged lists, engines, predictions, alerts (backend/app/schemas/api.py: Page, EngineSummary, EngineDetail,
+// PredictionOut, AlertOut) --------------------------------------------------------------------------------------
+
+/** `Page[T]` as returned by every list endpoint. */
+export const pageSchema = <T extends z.ZodType>(item: T) =>
+  z.object({
+    items: z.array(item),
+    total: z.number().int().nonnegative(),
+    limit: z.number().int(),
+    offset: z.number().int(),
+  })
+export interface Page<T> {
+  items: T[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export const riskSchema = z.enum(['normal', 'warning', 'critical'])
+export type Risk = z.infer<typeof riskSchema>
+
+export const predictionSchema = z.object({
+  id: z.number(),
+  engine_id: z.number(),
+  cycle: z.number(),
+  predicted_rul: z.number(),
+  failure_score: z.number(), // uncalibrated model score, NOT a probability
+  risk_category: riskSchema,
+  model_version: z.string(),
+  history_len: z.number(),
+  created_at: timestamp,
+})
+export type Prediction = z.infer<typeof predictionSchema>
+
+export const originSchema = z.enum(['api', 'simulation'])
+export type Origin = z.infer<typeof originSchema>
+
+export const alertStatusSchema = z.enum(['open', 'acknowledged', 'resolved'])
+export type AlertStatus = z.infer<typeof alertStatusSchema>
+export const alertSeveritySchema = z.enum(['warning', 'critical'])
+export type AlertSeverity = z.infer<typeof alertSeveritySchema>
+
+export const engineSummarySchema = z.object({
+  id: z.number(),
+  last_cycle: z.number(),
+  last_reading_at: timestamp.nullable(),
+  latest_prediction: predictionSchema.nullable(),
+  risk_category: riskSchema.nullable(),
+  origin: originSchema,
+  // Only unresolved alerts are attached to an engine summary.
+  alert_status: z.enum(['open', 'acknowledged']).nullable(),
+  alert_severity: alertSeveritySchema.nullable(),
+})
+export type EngineSummary = z.infer<typeof engineSummarySchema>
+
+export const engineDetailSchema = engineSummarySchema.extend({
+  created_at: timestamp,
+  reading_count: z.number(),
+  prediction_count: z.number(),
+})
+export type EngineDetail = z.infer<typeof engineDetailSchema>
+
+export const alertSchema = z.object({
+  id: z.number(),
+  engine_id: z.number(),
+  severity: alertSeveritySchema,
+  status: alertStatusSchema,
+  predicted_rul: z.number(),
+  prediction_id: z.number(),
+  model_version: z.string(),
+  created_at: timestamp,
+  updated_at: timestamp,
+  acknowledged_at: timestamp.nullable(),
+  resolved_at: timestamp.nullable(),
+  resolution_reason: z.string().nullable(),
+})
+export type Alert = z.infer<typeof alertSchema>
